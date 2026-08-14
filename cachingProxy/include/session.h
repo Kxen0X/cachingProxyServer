@@ -8,7 +8,13 @@
 class Session: public std::enable_shared_from_this<Session> {
 public:
 
-	Session(asio::io_context& cnxt, asio::ip::tcp::socket s, std::string& URL, std::unordered_map<std::string, std::string>& c) : context(cnxt), sock(std::move(s)), originURL{ URL }, originSock(cnxt), cache{ c } {}
+	Session(asio::io_context& cnxt, 
+		asio::ip::tcp::socket s, 
+		std::unordered_map<std::string, std::string>& c, 
+		std::string& hhost, 
+		std::string& sservice, 
+		asio::ip::tcp::resolver::results_type& eendp) : context(cnxt), sock(std::move(s)), originSock(cnxt), cache{ c }, host{ hhost }, service{ sservice }, endpoints{ eendp } {
+	}
 
 
 	void Start() {
@@ -60,16 +66,7 @@ public:
 	void WriteDataToOrigin(std::string request) {
 		this->requestToOrigin = std::move(request);
 		auto self = shared_from_this();
-
-		auto resolver = std::make_shared<asio::ip::tcp::resolver>(context);
-
-		std::string host = getHostFromOrigin();
-		std::string service = getProtocol();
-
-		resolver->async_resolve(host, service,
-			[self, this, resolver](std::error_code ec, asio::ip::tcp::resolver::results_type endpoints) {
-				if (!ec) {
-					asio::async_connect(originSock, endpoints,
+		asio::async_connect(originSock, endpoints,
 						[self, this](std::error_code ec, asio::ip::tcp::endpoint endpoint) {
 							if (!ec) {
 								asio::async_write(originSock, asio::buffer(requestToOrigin),
@@ -86,11 +83,8 @@ public:
 								std::cerr << "Connect Error: " << ec.message() << std::endl;
 							}
 						});
-				}
-				else {
-					std::cerr << "Resolve Error: " << ec.message() << std::endl;
-				}
-			});
+
+
 	}
 
 	void ReadResponseFromOrigin() {
@@ -111,52 +105,54 @@ public:
 		auto self = shared_from_this();
 
 		if (incache) {
-			responseFromOrigin = cache.at(getRoute());
-			size_t firstNewLine = responseFromOrigin.find("\r\n");
-			if (firstNewLine != std::string::npos) {
-				responseFromOrigin.insert(firstNewLine + 2, "X-Cache: HIT\r\n");
-			}
+			asio::async_write(sock, asio::buffer(cache.at(getRoute())), [self, this](std::error_code ec, size_t length) {
+				if (!ec) {
+					Close();
+				}
+				else {
+					std::cerr << ec.message() << std::endl;
+				}
+				});
 		}
 		else {
-			cache.insert({ getRoute(), responseFromOrigin });
-			size_t firstNewLine = responseFromOrigin.find("\r\n");
+			std::string temp = responseFromOrigin;
+			size_t firstNewLine = temp.find("\r\n");
+			if (firstNewLine != std::string::npos) {
+				temp.insert(firstNewLine + 2, "X-Cache: HIT\r\n");
+			}
+			cache.insert({ getRoute(), temp });
+
+			firstNewLine = responseFromOrigin.find("\r\n");
 			if (firstNewLine != std::string::npos) {
 				responseFromOrigin.insert(firstNewLine + 2, "X-Cache: MISS\r\n");
 			}
+			asio::async_write(sock, asio::buffer(responseFromOrigin), [self, this](std::error_code ec, size_t length) {
+				if (!ec) {
+					Close();
+				}
+				else {
+					std::cerr << ec.message() << std::endl;
+				}
+				});
 			
 		}
 
-		asio::async_write(sock, asio::buffer(responseFromOrigin), [self, this](std::error_code ec, size_t length) {
-			if (!ec) {
-				Close();
-			}
-			else {
-				std::cerr << ec.message() << std::endl;
-			}
-			});
+		
 	}
 	void Close() {
 		std::error_code ec;
-
-		sock.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-		sock.close(ec);
-
-		originSock.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-		originSock.close(ec);
+		if (sock.is_open()) {
+			sock.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+			sock.close(ec);
+		}
+		if (originSock.is_open()) {
+			originSock.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+			originSock.close(ec);
+		}
 	}
 private:
 
-	std::string getProtocol() {
-		size_t pos = originURL.find("://");
-		std::string res;
-		if (pos == std::string::npos) {
-			std::cerr << "wtf" << std::endl;
-			return res;
-		}
-		return originURL.substr(0, pos);
-		
-
-	}
+	
 
 	std::string getRoute() {
 		size_t firstSpacePos = HTTPRequest.find(' ');
@@ -164,30 +160,37 @@ private:
 		return HTTPRequest.substr(firstSpacePos + 1, secondSpacePos - firstSpacePos - 1);
 	}
 
-	int getContentLength(std::string headers) {
-		std::transform(headers.begin(), headers.end(), headers.begin(), [](char c) { return std::tolower(c); });
+	int getContentLength(std::string_view headers) {
+		std::string target = "Content-Length:";
 
-		std::string target = "content-length:";
+		auto it = std::search(
+			headers.begin(), headers.end(),
+			target.begin(), target.end(),
+			[](char ch1, char ch2) { return std::tolower(ch1) == std::tolower(ch2); }
+		);
 
-		size_t ct = headers.find(target);
-		if (ct == std::string::npos) {
-			return 0;
+		if (it != headers.end()) {
+			size_t ct = std::distance(headers.begin(), it);
+			if (ct == std::string::npos) {
+				return 0;
+			}
+			auto end_pos = headers.find_first_of("\r\n", ct);
+			if (end_pos == std::string::npos) {
+				end_pos = headers.size();
+			}
+			std::size_t val_start = ct + target.length();
+			std::string value_str(headers.substr(val_start, end_pos - val_start));
+
+			try {
+				return std::stoul(value_str);
+			}
+			catch (...) {
+				return 0;
+			}
 		}
-
-		auto end_pos = headers.find_first_of("\r\n", ct);
-		if (end_pos == std::string::npos) {
-			end_pos = headers.size();
-		}
-
-		std::size_t val_start = ct + target.length();
-		std::string value_str = headers.substr(val_start, end_pos - val_start);
-
-		try {
-			return std::stoul(value_str);
-		}
-		catch (...) {
-			return 0;
-		}
+		
+		return 0;
+		
 	}
 
 	void handleRequest() {
@@ -207,18 +210,7 @@ private:
 		
 	}
 
-	std::string getHostFromOrigin() {
-		std::string host = originURL;
-		size_t pos = host.find("://");
-		if (pos != std::string::npos) {
-			host = host.substr(pos + 3);
-		}
-		pos = host.find('/');
-		if (pos != std::string::npos) {
-			host = host.substr(0, pos);
-		}
-		return host;
-	}
+	
 
 	std::string modifyHostHeader(const std::string& originalRequest) {
 		std::string request = originalRequest;
@@ -229,7 +221,7 @@ private:
 			[](char ch1, char ch2) { return std::tolower(ch1) == std::tolower(ch2); }
 		);
 
-		std::string targetHost = getHostFromOrigin();
+		std::string targetHost = host;
 
 		if (it != request.end()) {
 			size_t hostPos = std::distance(request.begin(), it);
@@ -261,6 +253,9 @@ private:
 
 private:
 
+	std::string host;
+	std::string service;
+	
 
 	asio::ip::tcp::socket sock;
 	asio::io_context &context;
@@ -269,15 +264,12 @@ private:
 	std::string bodyData;
 	std::string HTTPRequest;
 
-
-	std::string originURL;
-	asio::io_context originContext;
 	asio::ip::tcp::socket originSock;
 
 	std::string requestToOrigin;
 	std::string responseFromOrigin;
 
-
+	asio::ip::tcp::resolver::results_type endpoints;
 
 	std::unordered_map<std::string, std::string> &cache;
 	bool incache;

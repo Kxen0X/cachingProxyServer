@@ -29,7 +29,6 @@ add_executable(caching-proxy
     cachingProxy/src/cachingProxyServer.cpp
     cachingProxy/include/cachingProxyServer.h
     cachingProxy/include/net_common.h
-    cachingProxy/include/TSqueue.h
     cachingProxy/include/session.h
 )
 

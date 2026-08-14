@@ -24,4 +24,6 @@ Makefile
 .idea/
 *.user
 *.suo
+.vs
 .vs/
+.vs/*
