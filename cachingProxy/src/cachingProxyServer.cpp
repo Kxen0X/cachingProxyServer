@@ -56,10 +56,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    std::cout << "Press Enter to stop server..." << std::endl;
-    std::cin.get();
-
-    server.Stop();
+    server.Wait();
 
 	return 0;
 }
