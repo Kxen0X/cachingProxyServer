@@ -1,19 +1,15 @@
 ﻿#pragma once
 
-#include <iostream>
-#include <unordered_map>
-#include <list>
-#include <string_view>
-
 #include <net_common.h>
 #include <session.h>
+#include <LRUCache.h>
 
 
 class ProxyServer{
 
 public:
 
-	ProxyServer(uint16_t port, std::string_view url) :ConnPort{port}, originURL{ url }, acceptor(context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), ConnPort)) {
+	ProxyServer(uint16_t port, std::string_view url, size_t mxS = 50*1024*1024) : cache(mxS), ConnPort{port}, originURL{ url }, acceptor(context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), ConnPort)) {
 		asio::ip::tcp::resolver resolver(context);
 		host = getHostFromOrigin();
 		service = getProtocol();
@@ -49,6 +45,11 @@ public:
 
 	}
 
+	void Wait() {
+		if (this->contextThread.joinable()) {
+			this->contextThread.join();
+		}
+	}
 private:
 	std::string getHostFromOrigin() {
 		std::string host = originURL;
@@ -98,7 +99,7 @@ private:
 
 private:
 
-	std::unordered_map<std::string, std::string> cache;
+	LRUCache cache;
 	
 	std::string originURL;
 	int ConnPort;

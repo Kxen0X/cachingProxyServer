@@ -1,7 +1,7 @@
 #pragma once
 
 #include <net_common.h>
-
+#include <LRUCache.h>
 
 
 
@@ -10,10 +10,11 @@ public:
 
 	Session(asio::io_context& cnxt, 
 		asio::ip::tcp::socket s, 
-		std::unordered_map<std::string, std::string>& c, 
+		LRUCache& c, 
 		std::string& hhost, 
 		std::string& sservice, 
-		asio::ip::tcp::resolver::results_type& eendp) : context(cnxt), sock(std::move(s)), originSock(cnxt), cache{ c }, host{ hhost }, service{ sservice }, endpoints{ eendp } {
+		asio::ip::tcp::resolver::results_type& eendp) : context(cnxt), sock(std::move(s)), originSock(cnxt), cache( c ), host{ hhost }, service{ sservice }, endpoints{ eendp } {
+		
 	}
 
 
@@ -103,9 +104,9 @@ public:
 
 	void WriteResponceToClient() {
 		auto self = shared_from_this();
-
 		if (incache) {
-			asio::async_write(sock, asio::buffer(cache.at(getRoute())), [self, this](std::error_code ec, size_t length) {
+			this->responseToClientFromCache = cache.get(getRoute()).value();
+			asio::async_write(sock, asio::buffer(this->responseToClientFromCache), [self, this](std::error_code ec, size_t length) {
 				if (!ec) {
 					Close();
 				}
@@ -120,7 +121,7 @@ public:
 			if (firstNewLine != std::string::npos) {
 				temp.insert(firstNewLine + 2, "X-Cache: HIT\r\n");
 			}
-			cache.insert({ getRoute(), temp });
+			cache.add(getRoute(), temp);
 
 			firstNewLine = responseFromOrigin.find("\r\n");
 			if (firstNewLine != std::string::npos) {
@@ -156,7 +157,14 @@ private:
 
 	std::string getRoute() {
 		size_t firstSpacePos = HTTPRequest.find(' ');
+		if (firstSpacePos == std::string::npos) {
+			return "";
+		}
+
 		size_t secondSpacePos = HTTPRequest.find(' ', firstSpacePos + 1);
+		if (secondSpacePos == std::string::npos) {
+			return "";
+		}
 		return HTTPRequest.substr(firstSpacePos + 1, secondSpacePos - firstSpacePos - 1);
 	}
 
@@ -196,7 +204,13 @@ private:
 	void handleRequest() {
 		std::string route = getRoute();
 
-		if (!cache.contains(route)) {
+		if (route.empty()) {
+			std::cerr << "INVALID HTTP REQUEST" << std::endl;
+			Close();
+			return;
+		}
+
+		if (!cache.get(route).has_value()) {
 			incache = 0;
 			std::string request = modifyHostHeader(this->HTTPRequest);
 
@@ -268,9 +282,10 @@ private:
 
 	std::string requestToOrigin;
 	std::string responseFromOrigin;
+	std::string responseToClientFromCache;
 
 	asio::ip::tcp::resolver::results_type endpoints;
 
-	std::unordered_map<std::string, std::string> &cache;
+	LRUCache &cache;
 	bool incache;
 };
