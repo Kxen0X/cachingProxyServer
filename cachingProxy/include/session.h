@@ -11,9 +11,9 @@ public:
 	Session(asio::io_context& cnxt, 
 		asio::ip::tcp::socket s, 
 		LRUCache& c, 
-		std::string& hhost, 
-		std::string& sservice, 
-		asio::ip::tcp::resolver::results_type& eendp) : context(cnxt), sock(std::move(s)), originSock(cnxt), cache( c ), host{ hhost }, service{ sservice }, endpoints{ eendp } {
+		const std::string& hhost, 
+		const std::string& sservice, 
+		const asio::ip::tcp::resolver::results_type& eendp) : context(cnxt), sock(std::move(s)), originSock(cnxt), cache( c ), host{ hhost }, service{ sservice }, endpoints{ eendp } {
 		
 	}
 
@@ -31,18 +31,33 @@ public:
 
 				std::string headers = RequestHeaders.substr(0, length);
 
-				size_t ContentLength = getContentLength(headers);
-				if (ContentLength == 0) {
-					this->HTTPRequest = this->RequestHeaders;
-					this->handleRequest();
+				if (isClearingRequest(headers)) {
+					cache.clear();
+					WriteResponceToClient(1);
 				}
 				else {
-					size_t remainDataSize = RequestHeaders.size() - length;
-					ReadBody(ContentLength - remainDataSize);
+					size_t ContentLength = getContentLength(headers);
+					if (ContentLength == 0) {
+						this->HTTPRequest = this->RequestHeaders;
+						this->handleRequest();
+					}
+					else {
+						size_t remainDataSize = RequestHeaders.size() - length;
+						if (remainDataSize >= ContentLength) {
+							this->HTTPRequest = RequestHeaders.substr(0, length + ContentLength);
+							this->handleRequest();
+						}
+						else {
+
+							ReadBody(ContentLength - remainDataSize);
+						}
+					}
+
 				}
 			}
 			else {
 				std::cerr << ec.message() << std::endl;
+				Close();
 			}
 
 
@@ -59,7 +74,8 @@ public:
 			}
 			else {
 				std::cerr << ec.message() << std::endl;
-				
+				Close();
+
 			}
 		});
 	}
@@ -77,11 +93,13 @@ public:
 										}
 										else {
 											std::cerr << "Write to origin Error: " << ec.message() << std::endl;
+											Close();
 										}
 									});
 							}
 							else {
 								std::cerr << "Connect Error: " << ec.message() << std::endl;
+								Close();
 							}
 						});
 
@@ -91,51 +109,69 @@ public:
 	void ReadResponseFromOrigin() {
 		auto self = shared_from_this();
 
-		asio::async_read(originSock, asio::dynamic_buffer(responseFromOrigin), [self, this](std::error_code ec, size_t length) {
+		asio::async_read(originSock, asio::dynamic_buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
 			if (!ec || ec == asio::error::eof) {
-				WriteResponceToClient();
+				WriteResponceToClient(0);
 			}
 			else {
 				std::cerr << ec.message() << std::endl;
+				Close();
 
 			}
 		});
 	}
 
-	void WriteResponceToClient() {
+	void WriteResponceToClient(bool isClearing) {
 		auto self = shared_from_this();
-		if (incache) {
-			this->responseToClientFromCache = cache.get(getRoute()).value();
-			asio::async_write(sock, asio::buffer(this->responseToClientFromCache), [self, this](std::error_code ec, size_t length) {
+		if (isClearing) {
+			this->responseToClient = "HTTP/1.1 200 OK\r\nX_Clear-cache-header: 1\r\n\r\n";
+			asio::async_write(sock, asio::buffer(this->responseToClient), [self, this](std::error_code ec, size_t length) {
 				if (!ec) {
 					Close();
 				}
 				else {
 					std::cerr << ec.message() << std::endl;
+					Close();
 				}
 				});
 		}
 		else {
-			std::string temp = responseFromOrigin;
-			size_t firstNewLine = temp.find("\r\n");
-			if (firstNewLine != std::string::npos) {
-				temp.insert(firstNewLine + 2, "X-Cache: HIT\r\n");
-			}
-			cache.add(getRoute(), temp);
 
-			firstNewLine = responseFromOrigin.find("\r\n");
-			if (firstNewLine != std::string::npos) {
-				responseFromOrigin.insert(firstNewLine + 2, "X-Cache: MISS\r\n");
+			if (incache) {
+				this->responseToClient = cache.get(getRoute()).value();
+				asio::async_write(sock, asio::buffer(this->responseToClient), [self, this](std::error_code ec, size_t length) {
+					if (!ec) {
+						Close();
+					}
+					else {
+						std::cerr << ec.message() << std::endl;
+						Close();
+					}
+					});
 			}
-			asio::async_write(sock, asio::buffer(responseFromOrigin), [self, this](std::error_code ec, size_t length) {
-				if (!ec) {
-					Close();
+			else {
+				std::string temp = responseToClient;
+				size_t firstNewLine = temp.find("\r\n");
+				if (firstNewLine != std::string::npos) {
+					temp.insert(firstNewLine + 2, "X-Cache: HIT\r\n");
 				}
-				else {
-					std::cerr << ec.message() << std::endl;
+				cache.add(getRoute(), temp);
+
+				firstNewLine = responseToClient.find("\r\n");
+				if (firstNewLine != std::string::npos) {
+					responseToClient.insert(firstNewLine + 2, "X-Cache: MISS\r\n");
 				}
-				});
+				asio::async_write(sock, asio::buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
+					if (!ec) {
+						Close();
+					}
+					else {
+						std::cerr << ec.message() << std::endl;
+						Close();
+					}
+					});
 			
+			}
 		}
 
 		
@@ -153,6 +189,11 @@ public:
 	}
 private:
 
+	bool isClearingRequest(std::string_view headers) {
+		std::string target = "X_Clear-cache-header: 1";
+		auto pos = std::search(headers.begin(), headers.end(), target.begin(), target.end(), [](char c1, char c2) { return std::tolower(c1) == std::tolower(c2); });
+		return pos != headers.end();
+	}
 	
 
 	std::string getRoute() {
@@ -218,7 +259,7 @@ private:
 		}
 		else {
 			incache = 1;
-			WriteResponceToClient();
+			WriteResponceToClient(0);
 		}
 
 		
@@ -251,8 +292,14 @@ private:
 			}
 		}
 
-		size_t connPos = request.find("Connection:");
-		if (connPos != std::string::npos) {
+		std::string connTarget = "Connection:";
+		it = std::search(
+			request.begin(), request.end(),
+			connTarget.begin(), connTarget.end(),
+			[](char ch1, char ch2) { return std::tolower(ch1) == std::tolower(ch2); }
+		);
+		if (it != request.end()) {
+			size_t connPos = std::distance(request.begin(), it);
 			size_t endPos = request.find("\r\n", connPos);
 			request.replace(connPos, endPos - connPos, "Connection: close");
 		}
@@ -281,8 +328,7 @@ private:
 	asio::ip::tcp::socket originSock;
 
 	std::string requestToOrigin;
-	std::string responseFromOrigin;
-	std::string responseToClientFromCache;
+	std::string responseToClient;
 
 	asio::ip::tcp::resolver::results_type endpoints;
 
