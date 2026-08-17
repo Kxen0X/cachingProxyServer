@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <list>
 #include <string_view>
+#include <filesystem>
+#include <fstream>
 
 #ifdef _WIN32
 #define _WIN32_WINNT 0x0A00

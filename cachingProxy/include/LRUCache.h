@@ -5,15 +5,12 @@
 
 
 // Last recently used cache 
-// 50 Mb by default
 class LRUCache {
 public:
 
 	LRUCache(size_t mxS = 50 * 1024 * 1024) : currentSize{ 0 }, maxSize{ mxS } {
 
 	}
-
-	//LRUCache(LRUCache& other) = delete;
 
 	std::optional<std::string> get(const std::string &key) {
 		auto it = iters.find(key);

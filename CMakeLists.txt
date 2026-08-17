@@ -30,7 +30,7 @@ add_executable(caching-proxy
     cachingProxy/include/cachingProxyServer.h
     cachingProxy/include/net_common.h
     cachingProxy/include/session.h
-    caching-proxy/include/LRUCache.h 
+    cachingProxy/include/LRUCache.h 
 )
 
 target_compile_definitions(caching-proxy PRIVATE ASIO_STANDALONE)
