@@ -5,15 +5,48 @@
 #include <LRUCache.h>
 
 
+
+#ifdef _WIN32
+#include <windows.h>
+
+BOOL WINAPI consoleHandler(DWORD ctrlType) {
+	if (ctrlType == CTRL_CLOSE_EVENT || ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
+		auto path = std::filesystem::temp_directory_path() / "caching-serverPort.port";
+		if (std::filesystem::exists(path)) {
+			std::filesystem::remove(path);
+		}
+		return TRUE;
+	}
+	return FALSE;
+}
+#endif
+
 class ProxyServer{
 
 public:
 
-	ProxyServer(uint16_t port, std::string_view url, size_t mxS = 50*1024*1024) : cache(mxS), ConnPort{port}, originURL{ url }, acceptor(context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), ConnPort)) {
+	ProxyServer(uint16_t port, std::string_view url) : cache(), ConnPort{ port }, originURL{ url }, acceptor(context), signals{ context, SIGINT, SIGTERM, }{
+		#if defined(SIGHUP)
+			signals.add(SIGHUP);
+		#endif
+		#ifdef _WIN32
+					SetConsoleCtrlHandler(consoleHandler, TRUE);
+		#endif
+		asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), ConnPort);
+
+		acceptor.open(endpoint.protocol());
+
+		acceptor.set_option(asio::socket_base::reuse_address(false));
+
+		acceptor.bind(endpoint);
+		acceptor.listen();
+		
+		
+
 		asio::ip::tcp::resolver resolver(context);
 		host = getHostFromOrigin();
 		service = getProtocol();
-
+		
 		std::error_code ec;
 		endp = resolver.resolve(host, service, ec);
 
@@ -27,6 +60,13 @@ public:
 	}
 
 	bool Start() {
+		signals.async_wait([this](std::error_code ec, int signal_number) {
+			if (!ec) {
+				std::cout << "\nStopping server gracefully..." << std::endl;
+				removePortFile();
+				Stop();
+			}
+			});
 		try {
 			Start_acception();
 			this->contextThread = std::thread([this]() {context.run(); });
@@ -50,6 +90,16 @@ public:
 			this->contextThread.join();
 		}
 	}
+
+private:
+	void removePortFile() {
+		auto path = std::filesystem::temp_directory_path() / "caching-serverPort.port";
+		if (std::filesystem::exists(path)) {
+			std::filesystem::remove(path);
+		}
+	}
+	
+
 private:
 	std::string getHostFromOrigin() {
 		std::string host = originURL;
@@ -112,9 +162,9 @@ private:
 
 	asio::ip::tcp::acceptor acceptor;
 
-
-
 	asio::ip::tcp::resolver::results_type endp;
 
+
+	asio::signal_set signals;
 };
 
