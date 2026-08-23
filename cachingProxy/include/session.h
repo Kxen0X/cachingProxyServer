@@ -13,7 +13,13 @@ public:
 		LRUCache& c, 
 		const std::string& hhost, 
 		const std::string& sservice, 
-		const asio::ip::tcp::resolver::results_type& eendp) : context(cnxt), sock(std::move(s)), originSock(cnxt), cache( c ), host{ hhost }, service{ sservice }, endpoints{ eendp } {
+		const asio::ip::tcp::resolver::results_type& eendp) : context(cnxt), sock(std::move(s)), originSock(cnxt), cache( c ), host{ hhost }, service{ sservice }, endpoints{ eendp }, sslContext(asio::ssl::context::tls_client), sslsock(context, sslContext) {
+
+		#ifdef _WIN32
+				load_windows_system_certs(sslContext);
+		#else
+				sslContext.set_default_verify_paths(ec);
+		#endif	
 		
 	}
 
@@ -83,42 +89,98 @@ public:
 	void WriteDataToOrigin(std::string request) {
 		this->requestToOrigin = std::move(request);
 		auto self = shared_from_this();
-		asio::async_connect(originSock, endpoints,
-						[self, this](std::error_code ec, asio::ip::tcp::endpoint endpoint) {
-							if (!ec) {
-								asio::async_write(originSock, asio::buffer(requestToOrigin),
-									[self, this](std::error_code ec, size_t length) {
-										if (!ec) {
-											ReadResponseFromOrigin();
-										}
-										else {
-											std::cerr << "Write to origin Error: " << ec.message() << std::endl;
-											Close();
-										}
-									});
-							}
-							else {
-								std::cerr << "Connect Error: " << ec.message() << std::endl;
-								Close();
-							}
-						});
+		if (service != "https") {
+			asio::async_connect(originSock, endpoints,
+							[self, this](std::error_code ec, asio::ip::tcp::endpoint endpoint) {
+								if (!ec) {
+									asio::async_write(originSock, asio::buffer(requestToOrigin),
+										[self, this](std::error_code ec, size_t length) {
+											if (!ec) {
+												ReadResponseFromOrigin();
+											}
+											else {
+												std::cerr << "Write to origin Error: " << ec.message() << std::endl;
+												Close();
+											}
+										});
+								}
+								else {
+									std::cerr << "Connect Error: " << ec.message() << std::endl;
+									Close();
+								}
+							});
+
+		}
+		else {
+			std::error_code ec;
+		
+			if (ec) {
+				std::cout << "ERROR: " << ec.message() << std::endl;
+				Close();
+			}
+			asio::async_connect(sslsock.lowest_layer(), endpoints, [self, this](std::error_code ec, asio::ip::tcp::endpoint endpoint) {
+				if (!ec) {
+					sslsock.lowest_layer().set_option(asio::ip::tcp::no_delay(true));
+					sslsock.set_verify_mode(asio::ssl::verify_peer);
+					sslsock.set_verify_callback(asio::ssl::host_name_verification(host));
+
+					SSL_set_tlsext_host_name(sslsock.native_handle(), host.c_str());
+					sslsock.async_handshake(asio::ssl::stream<asio::ip::tcp::socket>::client, [this, self](std::error_code ec) {
+						if (!ec) {
+							asio::async_write(sslsock, asio::buffer(requestToOrigin),
+								[self, this](std::error_code ec, size_t length) {
+									if (!ec) {
+										ReadResponseFromOrigin();
+									}
+									else {
+										std::cerr << "Write to origin Error: " << ec.message() << std::endl;
+										Close();
+									}
+								});
+						}
+						else {
+							std::cerr << "Connect Error: " << ec.message() << std::endl;
+							Close();
+						}
+					});
+				}
+				else {
+					std::cerr << "Write to origin Error: " << ec.message() << std::endl;
+					Close();
+				}
+			});
+		}
 
 
 	}
 
 	void ReadResponseFromOrigin() {
 		auto self = shared_from_this();
+		if (service != "https") {
+			asio::async_read(originSock, asio::dynamic_buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
+				if (!ec || ec == asio::error::eof) {
+					WriteResponceToClient(0);
+				}
+				else {
+					std::cerr << ec.message() << std::endl;
+					Close();
 
-		asio::async_read(originSock, asio::dynamic_buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
-			if (!ec || ec == asio::error::eof) {
-				WriteResponceToClient(0);
-			}
-			else {
-				std::cerr << ec.message() << std::endl;
-				Close();
+				}
+			});
 
-			}
-		});
+		}
+		else {
+			asio::async_read(sslsock, asio::dynamic_buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
+				if (!ec || ec == asio::error::eof) {
+					WriteResponceToClient(0);
+				}
+				else {
+					std::cerr << ec.message() << std::endl;
+					Close();
+
+				}
+				});
+		}
 	}
 
 	void WriteResponceToClient(bool isClearing) {
@@ -179,12 +241,19 @@ public:
 	void Close() {
 		std::error_code ec;
 		if (sock.is_open()) {
+			sock.cancel(ec);
 			sock.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 			sock.close(ec);
 		}
 		if (originSock.is_open()) {
+			originSock.cancel(ec);
 			originSock.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 			originSock.close(ec);
+		}
+		if (sslsock.lowest_layer().is_open()) {
+			sslsock.lowest_layer().cancel(ec);
+			sslsock.lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+			sslsock.lowest_layer().close();
 		}
 	}
 private:
@@ -220,9 +289,7 @@ private:
 
 		if (it != headers.end()) {
 			size_t ct = std::distance(headers.begin(), it);
-			if (ct == std::string::npos) {
-				return 0;
-			}
+
 			auto end_pos = headers.find_first_of("\r\n", ct);
 			if (end_pos == std::string::npos) {
 				end_pos = headers.size();
@@ -334,4 +401,9 @@ private:
 
 	LRUCache &cache;
 	bool incache;
+
+	asio::ssl::context sslContext;
+	asio::ssl::stream<asio::ip::tcp::socket> sslsock;
+
+
 };

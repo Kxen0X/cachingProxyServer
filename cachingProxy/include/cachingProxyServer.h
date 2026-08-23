@@ -36,7 +36,7 @@ public:
 
 		acceptor.open(endpoint.protocol());
 
-		acceptor.set_option(asio::socket_base::reuse_address(false));
+		acceptor.set_option(asio::socket_base::reuse_address(true));
 
 		acceptor.bind(endpoint);
 		acceptor.listen();
@@ -49,7 +49,7 @@ public:
 		
 		std::error_code ec;
 		endp = resolver.resolve(host, service, ec);
-
+		std::cout << 1 << std::endl;
 		if (ec) {
 			std::cerr << "Resolve Error: " << ec.message() << std::endl;
 		}
@@ -64,7 +64,9 @@ public:
 			if (!ec) {
 				std::cout << "\nStopping server gracefully..." << std::endl;
 				removePortFile();
-				Stop();
+				std::error_code close_ec;
+				acceptor.close(close_ec);
+				context.stop();
 			}
 			});
 		try {
@@ -79,9 +81,20 @@ public:
 		return 1;
 	}
 	void Stop() {
+		if (isStopped.exchange(true)) return;
+
+		removePortFile();
+		std::error_code ec;
+		signals.cancel(ec);
+		if (acceptor.is_open()) {
+			acceptor.close(ec);
+		}
 		context.stop();
 
-		if (this->contextThread.joinable()) this->contextThread.join();
+		if (this->contextThread.joinable()) {
+			this->contextThread.join();
+			
+		}
 
 	}
 
@@ -121,7 +134,9 @@ private:
 			std::cerr << "wtf" << std::endl;
 			return res;
 		}
-		return originURL.substr(0, pos);
+		res = originURL.substr(0, pos);
+		std::ranges::transform(res, res.begin(), [](char c) {return std::tolower(c); });
+		return res;
 
 	}
 
@@ -129,19 +144,21 @@ private:
 		this->acceptor.async_accept([this](std::error_code ec, asio::ip::tcp::socket connSock) {
 
 			if (!ec) {
-				std::cout << connSock.remote_endpoint() << std::endl;
 
 				std::make_shared<Session>(context, std::move(connSock), cache, host, service, endp)->Start();
-				 
+				Start_acception();
+
 			}
 			else {
-				std::cerr << ec.message() << std::endl;
+				if (ec != asio::error::operation_aborted) {
+					std::cerr << "Accept error: " << ec.message() << std::endl;
+					Start_acception();
+				}
 			}
 
 
 
 
-			Start_acception();
 		});
 	}
 
@@ -166,5 +183,7 @@ private:
 
 
 	asio::signal_set signals;
+
+	std::atomic<bool> isStopped{ false };
 };
 
