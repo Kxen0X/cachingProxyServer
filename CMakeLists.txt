@@ -5,16 +5,25 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
+
+if(WIN32)
+    message(STATUS "Downloading and building OpenSSL via FetchContent for Windows...")
+    FetchContent_Declare(
+        openssl
+        GIT_REPOSITORY https://github.com/janbar/openssl-cmake.git
+        GIT_TAG        master
+    )
+    FetchContent_MakeAvailable(openssl)
+else()
+    find_package(OpenSSL REQUIRED)
+endif()
+
 FetchContent_Declare(
     asio
     GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
     GIT_TAG        master
 )
-
-FetchContent_GetProperties(asio)
-if(NOT asio_POPULATED)
-    FetchContent_Populate(asio)
-endif()
+FetchContent_MakeAvailable(asio)
 
 find_path(ASIO_INCLUDE_DIR asio.hpp
     HINTS
@@ -33,7 +42,10 @@ add_executable(caching-proxy
     cachingProxy/include/LRUCache.h 
 )
 
-target_compile_definitions(caching-proxy PRIVATE ASIO_STANDALONE)
+target_compile_definitions(caching-proxy PRIVATE 
+    ASIO_STANDALONE
+    ASIO_HAS_OPENSSL
+)
 
 target_include_directories(caching-proxy PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}/cachingProxy/include
@@ -41,4 +53,16 @@ target_include_directories(caching-proxy PRIVATE
 )
 
 find_package(Threads REQUIRED)
-target_link_libraries(caching-proxy PRIVATE Threads::Threads)
+
+if(WIN32)
+    target_link_libraries(caching-proxy PRIVATE 
+        Threads::Threads
+        ssl
+        crypto
+    )
+else()
+    target_link_libraries(caching-proxy PRIVATE 
+        Threads::Threads
+        OpenSSL::SSL
+    )
+endif()
