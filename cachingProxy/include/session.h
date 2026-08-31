@@ -25,191 +25,147 @@ public:
 
 
 	void Start() {
-		ReadHeader();
-	}
-
-	void ReadHeader() {
-
 		auto self = shared_from_this();
 
-		asio::async_read_until(sock, asio::dynamic_buffer(RequestHeaders, 8192), "\r\n\r\n", [self, this](std::error_code ec, size_t length) {
-			if (!ec) {
+		asio::co_spawn(this->context.get_executor(), [this, self]() -> asio::awaitable<void> {
+			try {
+				co_await ReadHeader();
+			}
+			catch (std::system_error& ec) {
+				std::cout << ec.what() << std::endl;
+				Close();
+			}
+		}, asio::detached);
+		
+	}
 
-				std::string headers = RequestHeaders.substr(0, length);
+	asio::awaitable<void> ReadHeader() {
+		std::error_code ec;
+		size_t length = co_await asio::async_read_until(sock, asio::dynamic_buffer(RequestHeaders, 8192), "\r\n\r\n", asio::redirect_error(asio::use_awaitable, ec));
+		if (ec == asio::error::eof || !ec) {
 
-				if (isClearingRequest(headers)) {
-					cache.clear();
-					WriteResponceToClient(1);
+			std::string headers = RequestHeaders.substr(0, length);
+			if (isClearingRequest(headers)) {
+				cache.clear();
+				std::cout << "cache cleared" << std::endl;
+
+				co_await WriteResponceToClient(1);
+
+			}
+			else {
+
+				size_t ContentLength = getContentLength(headers);
+				if (ContentLength == 0) {
+					this->HTTPRequest = this->RequestHeaders;
+
+
+					co_await this->handleRequest();
 				}
 				else {
-					size_t ContentLength = getContentLength(headers);
-					if (ContentLength == 0) {
-						this->HTTPRequest = this->RequestHeaders;
-						this->handleRequest();
+					size_t remainDataSize = RequestHeaders.size() - length;
+					if (remainDataSize >= ContentLength) {
+						this->HTTPRequest = RequestHeaders.substr(0, length + ContentLength);
+
+					
+						co_await this->handleRequest();
 					}
 					else {
-						size_t remainDataSize = RequestHeaders.size() - length;
-						if (remainDataSize >= ContentLength) {
-							this->HTTPRequest = RequestHeaders.substr(0, length + ContentLength);
-							this->handleRequest();
-						}
-						else {
 
-							ReadBody(ContentLength - remainDataSize);
-						}
+						co_await ReadBody(ContentLength - remainDataSize);
 					}
-
 				}
 			}
-			else {
-				std::cerr << ec.message() << std::endl;
-				Close();
-			}
-
-
-			});
+		}
+				
+			
+			
 	}
 
-	void ReadBody(size_t contentLength) {
-		auto self = shared_from_this();
+	asio::awaitable<void> ReadBody(size_t contentLength) {
+		std::error_code ec;
 
-		asio::async_read(sock, asio::dynamic_buffer(bodyData), asio::transfer_exactly(contentLength), [self, this](std::error_code ec, size_t length) {
-			if (!ec) {
-				this->HTTPRequest = this->RequestHeaders + this->bodyData;
-				this->handleRequest();
-			}
-			else {
-				std::cerr << ec.message() << std::endl;
-				Close();
+		size_t length = co_await asio::async_read(sock, asio::dynamic_buffer(bodyData), asio::transfer_exactly(contentLength), asio::redirect_error(asio::use_awaitable, ec));
+		if (ec == asio::error::eof || !ec) {
 
-			}
-		});
+			this->HTTPRequest = this->RequestHeaders + this->bodyData;
+
+			co_await this->handleRequest();
+		}
+
 	}
 
-	void WriteDataToOrigin(std::string request) {
+	asio::awaitable<void> WriteDataToOrigin(std::string request) {
 		this->requestToOrigin = std::move(request);
-		auto self = shared_from_this();
 		if (service != "https") {
-			asio::async_connect(originSock, endpoints,
-							[self, this](std::error_code ec, asio::ip::tcp::endpoint endpoint) {
-								if (!ec) {
-									asio::async_write(originSock, asio::buffer(requestToOrigin),
-										[self, this](std::error_code ec, size_t length) {
-											if (!ec) {
-												ReadResponseFromOrigin();
-											}
-											else {
-												std::cerr << "Write to origin Error: " << ec.message() << std::endl;
-												Close();
-											}
-										});
-								}
-								else {
-									std::cerr << "Connect Error: " << ec.message() << std::endl;
-									Close();
-								}
-							});
+
+			auto endpoint = co_await asio::async_connect(originSock, endpoints, asio::use_awaitable);
+
+			size_t length = co_await asio::async_write(originSock, asio::buffer(requestToOrigin), asio::use_awaitable);
+			co_await ReadResponseFromOrigin();
+
+
 
 		}
 		else {
+			auto endpoint = co_await asio::async_connect(sslsock.lowest_layer(), endpoints, asio::use_awaitable);
+
+			sslsock.lowest_layer().set_option(asio::ip::tcp::no_delay(true));
+			sslsock.set_verify_mode(asio::ssl::verify_peer);
+			sslsock.set_verify_callback(asio::ssl::host_name_verification(host));
+
+			SSL_set_tlsext_host_name(sslsock.native_handle(), host.c_str());
+
+			co_await sslsock.async_handshake(asio::ssl::stream<asio::ip::tcp::socket>::client, asio::use_awaitable);
+
+			size_t length = co_await asio::async_write(sslsock, asio::buffer(requestToOrigin), asio::use_awaitable);
+
+			co_await ReadResponseFromOrigin();
+
+		}
+
+
+	}
+
+	asio::awaitable<void> ReadResponseFromOrigin() {
+		if (service != "https") {
 			std::error_code ec;
-		
-			if (ec) {
-				std::cout << "ERROR: " << ec.message() << std::endl;
-				Close();
+
+			size_t length = co_await asio::async_read(originSock, asio::dynamic_buffer(responseToClient), asio::redirect_error(asio::use_awaitable, ec));
+			if (ec == asio::error::eof || !ec) {
+
+				co_await WriteResponceToClient(0);
 			}
-			asio::async_connect(sslsock.lowest_layer(), endpoints, [self, this](std::error_code ec, asio::ip::tcp::endpoint endpoint) {
-				if (!ec) {
-					sslsock.lowest_layer().set_option(asio::ip::tcp::no_delay(true));
-					sslsock.set_verify_mode(asio::ssl::verify_peer);
-					sslsock.set_verify_callback(asio::ssl::host_name_verification(host));
-
-					SSL_set_tlsext_host_name(sslsock.native_handle(), host.c_str());
-					sslsock.async_handshake(asio::ssl::stream<asio::ip::tcp::socket>::client, [this, self](std::error_code ec) {
-						if (!ec) {
-							asio::async_write(sslsock, asio::buffer(requestToOrigin),
-								[self, this](std::error_code ec, size_t length) {
-									if (!ec) {
-										ReadResponseFromOrigin();
-									}
-									else {
-										std::cerr << "Write to origin Error: " << ec.message() << std::endl;
-										Close();
-									}
-								});
-						}
-						else {
-							std::cerr << "Connect Error: " << ec.message() << std::endl;
-							Close();
-						}
-					});
-				}
-				else {
-					std::cerr << "Write to origin Error: " << ec.message() << std::endl;
-					Close();
-				}
-			});
-		}
-
-
-	}
-
-	void ReadResponseFromOrigin() {
-		auto self = shared_from_this();
-		if (service != "https") {
-			asio::async_read(originSock, asio::dynamic_buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
-				if (!ec || ec == asio::error::eof) {
-					WriteResponceToClient(0);
-				}
-				else {
-					std::cerr << ec.message() << std::endl;
-					Close();
-
-				}
-			});
 
 		}
 		else {
-			asio::async_read(sslsock, asio::dynamic_buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
-				if (!ec || ec == asio::error::eof) {
-					WriteResponceToClient(0);
-				}
-				else {
-					std::cerr << ec.message() << std::endl;
-					Close();
 
-				}
-				});
+			std::error_code ec;
+
+			size_t length = co_await asio::async_read(sslsock, asio::dynamic_buffer(responseToClient), asio::redirect_error(asio::use_awaitable, ec));
+			if (ec == asio::error::eof || !ec) {
+
+				co_await WriteResponceToClient(0);
+			}
+
 		}
 	}
 
-	void WriteResponceToClient(bool isClearing) {
-		auto self = shared_from_this();
+	asio::awaitable<void> WriteResponceToClient(bool isClearing) {
 		if (isClearing) {
 			this->responseToClient = "HTTP/1.1 200 OK\r\nX_Clear-cache-header: 1\r\n\r\n";
-			asio::async_write(sock, asio::buffer(this->responseToClient), [self, this](std::error_code ec, size_t length) {
-				if (!ec) {
-					Close();
-				}
-				else {
-					std::cerr << ec.message() << std::endl;
-					Close();
-				}
-				});
+
+			size_t length = co_await asio::async_write(sock, asio::buffer(this->responseToClient), asio::use_awaitable);
+
+			Close();
+
 		}
 		else {
-
 			if (incache) {
 				this->responseToClient = cache.get(getRoute()).value();
-				asio::async_write(sock, asio::buffer(this->responseToClient), [self, this](std::error_code ec, size_t length) {
-					if (!ec) {
-						Close();
-					}
-					else {
-						std::cerr << ec.message() << std::endl;
-						Close();
-					}
-					});
+
+				size_t length = co_await asio::async_write(sock, asio::buffer(this->responseToClient), asio::use_awaitable);
+
+				Close();
 			}
 			else {
 				std::string temp = responseToClient;
@@ -223,15 +179,9 @@ public:
 				if (firstNewLine != std::string::npos) {
 					responseToClient.insert(firstNewLine + 2, "X-Cache: MISS\r\n");
 				}
-				asio::async_write(sock, asio::buffer(responseToClient), [self, this](std::error_code ec, size_t length) {
-					if (!ec) {
-						Close();
-					}
-					else {
-						std::cerr << ec.message() << std::endl;
-						Close();
-					}
-					});
+
+				size_t length = co_await asio::async_write(sock, asio::buffer(responseToClient), asio::use_awaitable);
+				Close();
 			
 			}
 		}
@@ -309,24 +259,23 @@ private:
 		
 	}
 
-	void handleRequest() {
+	asio::awaitable<void> handleRequest() {
 		std::string route = getRoute();
-
 		if (route.empty()) {
 			std::cerr << "INVALID HTTP REQUEST" << std::endl;
 			Close();
-			return;
+			co_return;
 		}
 
 		if (!cache.get(route).has_value()) {
 			incache = 0;
 			std::string request = modifyHostHeader(this->HTTPRequest);
 
-			WriteDataToOrigin(request);
+			co_await WriteDataToOrigin(request);
 		}
 		else {
 			incache = 1;
-			WriteResponceToClient(0);
+			co_await WriteResponceToClient(0);
 		}
 
 		

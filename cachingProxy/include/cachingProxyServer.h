@@ -49,7 +49,6 @@ public:
 		
 		std::error_code ec;
 		endp = resolver.resolve(host, service, ec);
-		std::cout << 1 << std::endl;
 		if (ec) {
 			std::cerr << "Resolve Error: " << ec.message() << std::endl;
 		}
@@ -60,7 +59,11 @@ public:
 	}
 
 	bool Start() {
-		signals.async_wait([this](std::error_code ec, int signal_number) {
+
+		asio::co_spawn(this->context.get_executor(), [this]() -> asio::awaitable<void> {
+	
+			auto [ec, signal_number] = co_await signals.async_wait(asio::as_tuple(asio::use_awaitable));
+
 			if (!ec) {
 				std::cout << "\nStopping server gracefully..." << std::endl;
 				removePortFile();
@@ -68,7 +71,9 @@ public:
 				acceptor.close(close_ec);
 				context.stop();
 			}
-			});
+		}, asio::detached);
+
+		
 		try {
 			Start_acception();
 			this->contextThread = std::thread([this]() {context.run(); });
@@ -141,25 +146,22 @@ private:
 	}
 
 	void Start_acception() {
-		this->acceptor.async_accept([this](std::error_code ec, asio::ip::tcp::socket connSock) {
 
-			if (!ec) {
-
-				std::make_shared<Session>(context, std::move(connSock), cache, host, service, endp)->Start();
-				Start_acception();
-
-			}
-			else {
-				if (ec != asio::error::operation_aborted) {
-					std::cerr << "Accept error: " << ec.message() << std::endl;
-					Start_acception();
+		asio::co_spawn(context.get_executor(), [this]() -> asio::awaitable<void> {
+			for (;;) {
+				try {
+					auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+					std::make_shared<Session>(context, std::move(socket), cache, host, service, endp)->Start();
+				}
+				catch (const std::system_error& e) {
+					if (e.code() == asio::error::operation_aborted) {
+						break;
+					}
+					std::cerr << "Accept error: " << e.what() << std::endl;
 				}
 			}
+		}, asio::detached);
 
-
-
-
-		});
 	}
 
 	

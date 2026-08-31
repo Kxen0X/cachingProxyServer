@@ -23,6 +23,9 @@
 #include <asio.hpp>
 #include <asio/ts/buffer.hpp>
 #include <asio/ts/internet.hpp>
+#include <asio/co_spawn.hpp>
+#include <asio/use_awaitable.hpp>
+#include <asio/awaitable.hpp>
 
 #define ASIO_HAS_OPENSSL
 
