@@ -14,7 +14,6 @@ This project is an implementation of the [roadmap.sh Caching Proxy Server Projec
 - [Building & Setup](#-building--setup)
 - [Usage & CLI Interface](#-usage--cli-interface)
 - [Testing the Proxy](#-testing-the-proxy)
-- [License](#-license)
 
 ---
 
