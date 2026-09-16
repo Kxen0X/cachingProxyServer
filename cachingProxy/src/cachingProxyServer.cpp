@@ -1,190 +1,140 @@
 ﻿#include "../include/cachingProxyServer.h"
 
-std::filesystem::path getPortPath() {
-    return std::filesystem::temp_directory_path() / "caching-serverPort.port";
+
+
+ProxyServer::ProxyServer(uint16_t port, std::string_view url) : cache(), ConnPort{ port }, originURL{ url }, acceptor(context), signals{ context, SIGINT, SIGTERM, } {
+#if defined(SIGHUP)
+	signals.add(SIGHUP);
+#endif
+#ifdef _WIN32
+	SetConsoleCtrlHandler(consoleHandler, TRUE);
+#endif
+	asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), ConnPort);
+
+	acceptor.open(endpoint.protocol());
+
+	acceptor.set_option(asio::socket_base::reuse_address(true));
+
+	acceptor.bind(endpoint);
+	acceptor.listen();
+
+
+
+	asio::ip::tcp::resolver resolver(context);
+	host = getHostFromOrigin();
+	service = getProtocol();
+
+	std::error_code ec;
+	endp = resolver.resolve(host, service, ec);
+	if (ec) {
+		std::cerr << "Resolve Error: " << ec.message() << std::endl;
+	}
 }
 
-bool savePort(uint16_t port) {
-    std::ofstream out(getPortPath());
-
-    if (!out.is_open()) {
-        return false;
-    }
-
-    out << port;
-    out.flush(); 
-
-    if (out.fail()) {
-        return false;
-    }
-
-    return true; 
+ProxyServer::~ProxyServer() {
+	Stop();
 }
 
-std::optional<std::string> getPort() {
-    std::filesystem::path path = getPortPath();
+bool ProxyServer::Start() {
 
-    if (!std::filesystem::exists(path)) {
-        return std::nullopt;
-    }
+	asio::co_spawn(this->context.get_executor(), [this]() -> asio::awaitable<void> {
 
-    std::ifstream in(path);
-    std::string port;
-    if (in >> port) {
-        return port;
-    }
-    return std::nullopt;
+		auto [ec, signal_number] = co_await signals.async_wait(asio::as_tuple(asio::use_awaitable));
+
+		if (!ec) {
+			std::cout << "\nStopping server gracefully..." << std::endl;
+			removePortFile();
+			std::error_code close_ec;
+			acceptor.close(close_ec);
+			context.stop();
+		}
+		}, asio::detached);
+
+
+	try {
+		Start_acception();
+		this->contextThread = std::thread([this]() {context.run(); });
+	}
+	catch (std::exception& ec) {
+		std::cerr << ec.what() << std::endl;
+		return 0;
+	}
+	std::cout << "STARTED" << std::endl;
+	return 1;
+}
+void ProxyServer::Stop() {
+	if (isStopped.exchange(true)) return;
+
+	removePortFile();
+	std::error_code ec;
+	signals.cancel(ec);
+	if (acceptor.is_open()) {
+		acceptor.close(ec);
+	}
+	context.stop();
+
+	if (this->contextThread.joinable()) {
+		this->contextThread.join();
+
+	}
+
 }
 
-void removePortFile() {
-    std::filesystem::path path = getPortPath();
-    if (std::filesystem::exists(path)) {
-        std::cout << 1 << std::endl;
-        std::filesystem::remove(path);
-    }
+void ProxyServer::Wait() {
+	if (this->contextThread.joinable()) {
+		this->contextThread.join();
+	}
+}
+
+void ProxyServer::removePortFile() {
+	auto path = std::filesystem::temp_directory_path() / "caching-serverPort.port";
+	if (std::filesystem::exists(path)) {
+		std::filesystem::remove(path);
+	}
 }
 
 
-int main(int argc, char* argv[])
-{
-	std::string_view port;
-	std::string_view origin;
-    bool clearCache = 0;
+std::string ProxyServer::getHostFromOrigin() {
+	std::string host = originURL;
+	size_t pos = host.find("://");
+	if (pos != std::string::npos) {
+		host = host.substr(pos + 3);
+	}
+	pos = host.find('/');
+	if (pos != std::string::npos) {
+		host = host.substr(0, pos);
+	}
+	return host;
+}
 
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        
-        if (arg == "--port" || arg == "--origin" || arg == "--clear-cache") {
-            
-            if (arg != "--clear-cache" && (i + 1 >= argc || std::string_view(argv[i + 1]).starts_with("--"))) {
-                std::cerr << "Error: Flag " << arg << " requires a valid value!" << std::endl;
-                std::cout << "Usage: caching-proxy --port <portNum> --origin <URL>" << std::endl;
-                return 1;
-            }
+std::string ProxyServer::getProtocol() {
+	size_t pos = originURL.find("://");
+	std::string res;
+	if (pos == std::string::npos) {
+		std::cerr << "wtf" << std::endl;
+		return res;
+	}
+	res = originURL.substr(0, pos);
+	std::ranges::transform(res, res.begin(), [](char c) {return std::tolower(c); });
+	return res;
 
-            if (arg == "--port") {
-                port = argv[++i];
-            }
-            else if (arg == "--origin") {
-                origin = argv[++i];
-            }
-            else {
-                clearCache = 1;
-            }
-        }
-        else {
-            std::cerr << "Error: Unknown argument: " << arg << std::endl;
-            return 1;
-        }
-    }
-    
-    if (!clearCache) {
-        
-        
+}
 
-        if (port.empty() && origin.empty()) {
-            std::cerr << "Lack of arguments" << std::endl;
-            return 1;
-        }
-        if (port.empty()) {
-            std::cerr << "The port number must be entered" << std::endl;
-            return 1;
-        }
-        if (origin.empty()) {
-            std::cerr << "URL must be entered" << std::endl;
-            return 1;
-        }
+void ProxyServer::Start_acception() {
 
-        if (std::filesystem::exists(getPortPath())) {
-            std::cerr << "This port is already in use by another server" << std::endl;
-            return 1;
-        }
-        uint16_t portNum;
+	asio::co_spawn(context.get_executor(), [this]() -> asio::awaitable<void> {
+		for (;;) {
+			try {
+				auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+				std::make_shared<Session>(context, std::move(socket), cache, host, service, endp)->Start();
+			}
+			catch (const std::system_error& e) {
+					if (e.code() == asio::error::operation_aborted) {
+					break;
+					}
+				std::cerr << "Accept error: " << e.what() << std::endl;
+			}
+		}
+	}, asio::detached);
 
-        auto [ptr, ec] = std::from_chars(port.data(), port.data() + port.size(), portNum);
-        if (ec != std::errc{} || ptr != port.data() + port.size()) {
-            std::cerr << "Invalid port format or size" << std::endl;
-            return 1;
-        }
-
-        ProxyServer server(portNum, origin);
-
-        if (!server.Start()) {
-            removePortFile();
-            std::cerr << "Failed to start server" << std::endl;
-            return 1;
-        }
-
-        if(!savePort(portNum)){
-            std::cerr << "WARNING: CANNOT CREATE FILE WITH PORT NUMBER, --clear-cache WILL NOT BE USABLE" << std::endl;
-
-        }
-
-        server.Wait();
-    }
-    else {
-        if (!std::filesystem::exists(getPortPath())) {
-            std::cerr << "The server is not running" << std::endl;
-            return 1;
-        }
-        auto serversPort = getPort();
-        if (serversPort.has_value()) {
-
-            std::string request = "GET / HTTP/1.1\r\nHost: 127.0.0.1:" + serversPort.value() + "\r\nX_Clear-cache-header: 1\r\n\r\n";
-
-            asio::io_context context;
-            asio::ip::tcp::resolver resolver(context);
-            
-
-            std::error_code ec;
-            auto endp = resolver.resolve("127.0.0.1", serversPort.value(), ec);
-
-            if (ec) {
-                std::cerr << "Resolve Error: " << ec.message() << std::endl;
-                return 1;
-            }
-
-            asio::ip::tcp::socket socket(context);
-
-            auto succEndp = asio::connect(socket, endp, ec);
-            if (ec) {
-                std::cerr << "Connection failed" << std::endl;
-                return 1;
-            }
-
-            size_t cnt = asio::write(socket, asio::buffer(request), ec);
-
-            if (ec) {
-                std::cout << "Failed to send request" << std::endl;
-                return 1;
-            }
-
-
-            if (cnt == request.size()) {
-                std::string response;
-
-                asio::read_until(socket, asio::dynamic_buffer(response), "\r\n\r\n", ec);
-
-                if (ec && ec != asio::error::eof) {
-                    std::cerr << "Failed to read response: " << ec.message() << std::endl;
-                    return 1;
-                }
-
-                if (response == "HTTP/1.1 200 OK\r\nX_Clear-cache-header: 1\r\n\r\n") {
-                    std::cout << "cache cleared" << std::endl;
-                    socket.close();
-                }
-            }
-            else {
-                std::cerr << "Failed to send the request; try again" << std::endl;
-                return 1;
-            }
-
-        }
-
-
-    }
-   
-
-	return 0;
 }

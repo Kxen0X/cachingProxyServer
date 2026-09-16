@@ -35,7 +35,7 @@
 
 #include <wincrypt.h>
 #pragma comment(lib, "crypt32.lib")
-void load_windows_system_certs(asio::ssl::context& ctx) {
+inline void load_windows_system_certs(asio::ssl::context& ctx) {
 	HCERTSTORE hStore = CertOpenSystemStoreA(0, "ROOT");
 	if (!hStore) return;
 

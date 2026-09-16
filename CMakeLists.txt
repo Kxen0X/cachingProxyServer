@@ -35,7 +35,10 @@ find_path(ASIO_INCLUDE_DIR asio.hpp
 message(STATUS "===> REAL ASIO INCLUDE DIR: ${ASIO_INCLUDE_DIR} <===")
 
 add_executable(caching-proxy
+    cachingProxy/src/main.cpp
     cachingProxy/src/cachingProxyServer.cpp
+    cachingProxy/src/LRUCache.cpp
+    cachingProxy/src/session.cpp
     cachingProxy/include/cachingProxyServer.h
     cachingProxy/include/net_common.h
     cachingProxy/include/session.h
