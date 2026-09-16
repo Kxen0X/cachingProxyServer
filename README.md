@@ -11,10 +11,10 @@ This project is an implementation of the [roadmap.sh Caching Proxy Server Projec
 - [Overview](#-overview)
 - [Key Features](#-key-features)
 - [Tech Stack & Prerequisites](#-tech-stack--prerequisites)
-- [Installation & Building](#-installation--building)
+- [Building & Setup](#-building--setup)
 - [Usage & CLI Interface](#-usage--cli-interface)
 - [Testing the Proxy](#-testing-the-proxy)
-- [Cache Verification & Headers](#-cache-verification--headers)
+- [License](#-license)
 
 ---
 
@@ -40,18 +40,101 @@ When a client requests a resource:
 
 ## 🛠 Tech Stack & Prerequisites
 
-* **Language:** C++20
-* **Networking:** Boost.Asio
-* **Security:** OpenSSL
+* **C++ Compiler:** GCC (11+), Clang (13+), or MSVC with full C++20 standard support
 * **Build System:** CMake (v3.20+)
-* **Package Management:** `vcpkg` / `FetchContent` / System Package Manager
+* **Libraries:**
+  * Boost (specifically `Boost.Asio`)
+  * OpenSSL
 
 ---
 
-## ⚙️ Installation & Building
+## ⚙️ Building & Setup
 
 ### 1. Clone the Repository
 
 ```bash
-git clone [https://github.com/Kxen0X/cachingProxyServer.git](https://github.com/Kxen0X/cachingProxyServer.git)
+git clone https://github.com/Kxen0X/cachingProxyServer.git
 cd cachingProxyServer
+```
+
+### 2. Configure Build Directory
+
+Generate build files using CMake:
+
+```bash
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+```
+
+### 3. Compile the Executable
+
+Build the binary target:
+
+```bash
+cmake --build build --config Release
+```
+
+After building, the compiled binary `caching-proxy` will be located inside the `./build` directory.
+
+---
+
+## 💻 Usage & CLI Interface
+
+Start the server using standard command-line options:
+
+```bash
+./build/caching-proxy --port <PORT> --origin <ORIGIN_URL>
+```
+
+### Command Line Arguments
+
+| Flag | Description | Example |
+| :--- | :--- | :--- |
+| `--port <number>` | Port on which the caching proxy server listens | `--port 3000` |
+| `--origin <url>` | Target origin server URL to forward requests to | `--origin http://dummyjson.com` |
+| `--clear-cache` | Clears all cached HTTP responses | `--clear-cache` |
+
+---
+
+## 🧪 Testing the Proxy
+
+You can verify the proxy behavior using `curl` or any HTTP client.
+
+### Step 1: Start the Proxy Server
+```bash
+./build/caching-proxy --port 3000 --origin http://dummyjson.com
+```
+
+### Step 2: First Request (Cache Miss)
+```bash
+curl -i http://localhost:3000/products
+```
+**Expected Response Header:**
+```http
+HTTP/1.1 200 OK
+X-Cache: MISS
+Content-Type: application/json
+...
+```
+
+### Step 3: Second Request (Cache Hit)
+```bash
+curl -i http://localhost:3000/products
+```
+**Expected Response Header:**
+```http
+HTTP/1.1 200 OK
+X-Cache: HIT
+Content-Type: application/json
+...
+```
+
+### Step 4: Clear Memory Cache
+```bash
+./build/caching-proxy --clear-cache
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
