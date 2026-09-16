@@ -32,7 +32,7 @@ When a client requests a resource:
 * **Asynchronous I/O Execution:** Built with C++20 coroutines (`boost::asio::awaitable` / `co_await`) for lightweight, non-blocking request handling.
 * **Thread-Safe LRU Cache:** Implements a thread-safe Least Recently Used (LRU) in-memory cache to maintain frequent requests while controlling memory usage.
 * **HTTPS / SSL Support:** Full SSL/TLS handshake support via **OpenSSL** (`boost::asio::ssl::stream`) for securing upstream forwarding and tunneling.
-* **Command Line Management:** CLI flags for setting custom ports, defining origin target URLs, and executing cache clearing operations.
+* **Multi-Process CLI Management:** Supports starting the main proxy daemon process and running a secondary process with the `--clear-cache` flag to issue cache clearing commands.
 * **Header Injection:** Appends custom `X-Cache: HIT` and `X-Cache: MISS` headers to HTTP responses for instant status inspection.
 
 ---
@@ -78,10 +78,20 @@ After building, the compiled binary `caching-proxy` will be located inside the `
 
 ## 💻 Usage & CLI Interface
 
-Start the server using standard command-line options:
+### Running the Proxy Server
+
+Start the primary server process using standard command-line options:
 
 ```bash
 ./build/caching-proxy --port <PORT> --origin <ORIGIN_URL>
+```
+
+### Clearing the Cache (Separate Process)
+
+To clear the active cache while the proxy server is running, execute a second process in another terminal window with the `--clear-cache` flag:
+
+```bash
+./build/caching-proxy --clear-cache
 ```
 
 ### Command Line Arguments
@@ -90,7 +100,7 @@ Start the server using standard command-line options:
 | :--- | :--- | :--- |
 | `--port <number>` | Port on which the caching proxy server listens | `--port 3000` |
 | `--origin <url>` | Target origin server URL to forward requests to | `--origin http://dummyjson.com` |
-| `--clear-cache` | Clears all cached HTTP responses | `--clear-cache` |
+| `--clear-cache` | Launches a separate process to clear the proxy cache | `--clear-cache` |
 
 ---
 
@@ -98,7 +108,7 @@ Start the server using standard command-line options:
 
 You can verify the proxy behavior using `curl` or any HTTP client.
 
-### Step 1: Start the Proxy Server
+### Step 1: Start Main Proxy Process
 ```bash
 ./build/caching-proxy --port 3000 --origin http://dummyjson.com
 ```
@@ -127,8 +137,7 @@ Content-Type: application/json
 ...
 ```
 
-### Step 4: Clear Memory Cache
+### Step 4: Clear Memory Cache (Run in a Second Terminal Process)
 ```bash
 ./build/caching-proxy --clear-cache
 ```
-
