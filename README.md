@@ -83,7 +83,7 @@ After building, the compiled binary `caching-proxy` will be located inside the `
 Start the primary server process using standard command-line options:
 
 ```bash
-./build/caching-proxy --port <PORT> --origin <ORIGIN_URL>
+./build/Release/caching-proxy --port <PORT> --origin <ORIGIN_URL>
 ```
 
 ### Clearing the Cache (Separate Process)
@@ -91,7 +91,7 @@ Start the primary server process using standard command-line options:
 To clear the active cache while the proxy server is running, execute a second process in another terminal window with the `--clear-cache` flag:
 
 ```bash
-./build/caching-proxy --clear-cache
+./build/Release/caching-proxy --clear-cache
 ```
 
 ### Command Line Arguments
@@ -110,7 +110,7 @@ You can verify the proxy behavior using `curl` or any HTTP client.
 
 ### Step 1: Start Main Proxy Process
 ```bash
-./build/caching-proxy --port 3000 --origin http://dummyjson.com
+./build/Release/caching-proxy --port 3000 --origin http://dummyjson.com
 ```
 
 ### Step 2: First Request (Cache Miss)
@@ -139,5 +139,5 @@ Content-Type: application/json
 
 ### Step 4: Clear Memory Cache (Run in a Second Terminal Process)
 ```bash
-./build/caching-proxy --clear-cache
+./build/Release/caching-proxy --clear-cache
 ```
